@@ -235,10 +235,9 @@ async function getApiKey(
 ): Promise<{ apiKey?: string; baseUrl?: string }> {
   if (config.apiKey) return { apiKey: config.apiKey, baseUrl: config.baseUrl };
   // Local patch: prefer the Vercel AI Gateway key, fall back to a direct TypeSafe key.
-  const fromEnv = (name: string) => $.env.get(name);
-  const gateway = await fromEnv('AI_GATEWAY_API_KEY');
+  const gateway = await $.env.get('AI_GATEWAY_API_KEY');
   if (gateway) return { apiKey: gateway, baseUrl: GATEWAY_URL };
-  const direct = await fromEnv('TYPESAFE_API_KEY');
+  const direct = await $.env.get('TYPESAFE_API_KEY');
   if (direct) return { apiKey: direct };
   const settings = await $.settings.read();
   const env = settings['env'];
