@@ -403,6 +403,22 @@ describe('HTTP client', () => {
     });
   });
 
+  it('builds a Vercel AI Gateway request and maps probability to noul', () => {
+    const request = buildJevRequest(
+      { apiKey: 'k', model: 'jev-latest', baseUrl: 'https://ai-gateway.vercel.sh/v4/ai/evaluation-model' },
+      'state',
+      { q: { type: 'noul', instructions: 'x' } },
+    );
+    expect(request.headers['ai-model-id']).toBe('typesafe-ai/jev');
+    expect(request.headers['ai-gateway-protocol-version']).toBe('0.0.1');
+    expect(JSON.parse(request.body)).toEqual({
+      state: 'state',
+      questions: { q: { type: 'boolean', instructions: 'x' } },
+    });
+    const parsed = parseJevResponse(200, true, '{"answers":{"q":{"type":"boolean","probability":0.8}}}');
+    expect(parsed.answers.q).toMatchObject({ noul: 0.8 });
+  });
+
   it('rejects failed and malformed responses', () => {
     expect(() => parseJevResponse(500, false, 'boom')).toThrow(/500/);
     expect(() => parseJevResponse(200, true, 'not json')).toThrow(/malformed/);

@@ -9,7 +9,7 @@ import type {
 } from 'claude-code';
 
 import { compact, reductionRatio, resolveOptions } from '../src/compact.js';
-import { buildJevRequest, DEFAULT_MODEL, parseJevResponse } from '../src/request.js';
+import { buildJevRequest, DEFAULT_MODEL, GATEWAY_URL, parseJevResponse } from '../src/request.js';
 import type {
   CompactOptions,
   CompactResult,
@@ -42,6 +42,8 @@ export type HookFetch = (url: string, init?: HookFetchInit) => Promise<HookFetch
 
 export type HookConfig = CompactOptions & {
   apiKey?: string;
+  /** Local patch: set to the Vercel AI Gateway URL when the key came from AI_GATEWAY_API_KEY. */
+  baseUrl?: string;
   compactAtPercent: number;
   minReductionRatio: number;
   model: string;
@@ -88,10 +90,10 @@ export function resolveHookConfig(options: PluginOptions): HookConfig {
 }
 
 /** A `JevAsker` over the engine's `$.http.fetch`. */
-export function jevAsker(fetchFn: HookFetch, apiKey: string, model: string): JevAsker {
+export function jevAsker(fetchFn: HookFetch, apiKey: string, model: string, baseUrl?: string): JevAsker {
   return {
     async ask(state, questions) {
-      const request = buildJevRequest({ apiKey, model }, state, questions);
+      const request = buildJevRequest({ apiKey, model, baseUrl }, state, questions);
       const response = await fetchFn(request.url, {
         method: request.method,
         headers: request.headers,
@@ -167,8 +169,8 @@ export async function compactSession(
   config: HookConfig,
   fetchFn: HookFetch,
 ): Promise<SessionCompaction> {
-  if (!config.apiKey) throw new Error('TYPESAFE_API_KEY is not configured');
-  const result = await compact(messages, jevAsker(fetchFn, config.apiKey, config.model), config);
+  if (!config.apiKey) throw new Error('AI_GATEWAY_API_KEY (or TYPESAFE_API_KEY) is not configured');
+  const result = await compact(messages, jevAsker(fetchFn, config.apiKey, config.model, config.baseUrl), config);
   return { result, messages: toSessionMessages(messages, result.messages) };
 }
 
@@ -230,17 +232,24 @@ async function getApiKey(
     settings: { read: () => Promise<Readonly<Record<string, unknown>>> };
   },
   config: HookConfig,
-): Promise<string | undefined> {
-  if (config.apiKey) return config.apiKey;
-  const fromEnv = await $.env.get('TYPESAFE_API_KEY');
-  if (fromEnv) return fromEnv;
+): Promise<{ apiKey?: string; baseUrl?: string }> {
+  if (config.apiKey) return { apiKey: config.apiKey, baseUrl: config.baseUrl };
+  // Local patch: prefer the Vercel AI Gateway key, fall back to a direct TypeSafe key.
+  const fromEnv = (name: string) => $.env.get(name);
+  const gateway = await fromEnv('AI_GATEWAY_API_KEY');
+  if (gateway) return { apiKey: gateway, baseUrl: GATEWAY_URL };
+  const direct = await fromEnv('TYPESAFE_API_KEY');
+  if (direct) return { apiKey: direct };
   const settings = await $.settings.read();
   const env = settings['env'];
   if (env && typeof env === 'object') {
-    const value = (env as Record<string, unknown>)['TYPESAFE_API_KEY'];
-    if (typeof value === 'string' && value) return value;
+    const record = env as Record<string, unknown>;
+    const g = record['AI_GATEWAY_API_KEY'];
+    if (typeof g === 'string' && g) return { apiKey: g, baseUrl: GATEWAY_URL };
+    const value = record['TYPESAFE_API_KEY'];
+    if (typeof value === 'string' && value) return { apiKey: value };
   }
-  return undefined;
+  return {};
 }
 
 function notify(
@@ -262,7 +271,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
 
   on('session.compact', async ($, event, next) => {
     try {
-      const config = { ...configured, apiKey: await getApiKey($, configured) };
+      const config = { ...configured, ...(await getApiKey($, configured)) };
       const { result, messages } = await compactSession(event.messages, config, async (url, init) => {
         const response = await $.http.fetch(url, init);
         return { status: response.status, ok: response.ok, text: response.text };

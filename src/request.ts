@@ -3,6 +3,10 @@ import type { JevAnswer, JevQuestions, JevResponse, JevState } from './types.js'
 export const SYSTEM_ONE_URL = 'https://api.typesafe.ai/v1/systemone';
 export const DEFAULT_MODEL = 'jev-latest';
 
+// Local patch: Vercel AI Gateway route to Jev (typesafe-ai/jev). Picked when baseUrl points at the gateway.
+export const GATEWAY_URL = 'https://ai-gateway.vercel.sh/v4/ai/evaluation-model';
+export const GATEWAY_MODEL = 'typesafe-ai/jev';
+
 export interface JevRequest {
   url: string;
   method: 'POST';
@@ -20,8 +24,28 @@ export function buildJevRequest(
   state: JevState,
   questions: JevQuestions,
 ): JevRequest {
+  const url = params.baseUrl ?? SYSTEM_ONE_URL;
+  if (url.includes('ai-gateway.vercel.sh')) {
+    // The gateway names the yes/no type `boolean` and takes the model as a header, not in the body.
+    const gatewayQuestions = Object.fromEntries(
+      Object.entries(questions).map(([name, q]) => [name, q.type === 'noul' ? { ...q, type: 'boolean' } : q]),
+    );
+    return {
+      url,
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${params.apiKey}`,
+        'content-type': 'application/json',
+        'ai-gateway-protocol-version': '0.0.1',
+        'ai-gateway-auth-method': 'api-key',
+        'ai-model-id': params.model?.startsWith('typesafe-ai/') ? params.model : GATEWAY_MODEL,
+        'ai-evaluation-model-specification-version': '4',
+      },
+      body: JSON.stringify({ state, questions: gatewayQuestions }),
+    };
+  }
   return {
-    url: params.baseUrl ?? SYSTEM_ONE_URL,
+    url,
     method: 'POST',
     headers: {
       authorization: `Bearer ${params.apiKey}`,
@@ -58,6 +82,12 @@ export function parseJevResponse(
     typeof parsed.answers !== 'object'
   ) {
     throw new Error('Jev response is missing answers');
+  }
+  // The gateway reports a yes/no answer as `probability`; the rest of the library reads `noul`.
+  for (const answer of Object.values(parsed.answers as Record<string, Record<string, unknown>>)) {
+    if (answer && typeof answer.probability === 'number' && !('noul' in answer)) {
+      answer.noul = answer.probability;
+    }
   }
   return parsed as JevResponse;
 }
